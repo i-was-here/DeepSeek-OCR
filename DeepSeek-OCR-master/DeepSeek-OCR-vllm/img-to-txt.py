@@ -4,6 +4,7 @@ import re
 import shutil
 import argparse
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Dict, Iterable
 
@@ -263,7 +264,7 @@ def process_media_folder(
     keys = list_media_pages(s3, bucket, base_prefix, media_id)
     if not keys:
         logging.getLogger('img-to-txt').warning(f'media_id={media_id}: no page images found; skipping.')
-        return False  # nothing to do
+        return 0  # nothing to do
 
     local_dir = os.path.join(download_root, media_id)
     download_objects(s3, bucket, keys, local_dir)
@@ -276,6 +277,7 @@ def process_media_folder(
     ])
 
     logger = logging.getLogger('img-to-txt')
+    pages_processed_this_media = 0
     for batch in tqdm(list(chunked(page_paths, mini_batch_size)), desc=f"OCR {media_id}", leave=False):
         batch_inputs = build_batch_inputs(batch)
         logger.info(f'media_id={media_id}: running OCR for {len(batch)} pages ...')
@@ -289,12 +291,13 @@ def process_media_folder(
             results[img_path] = content
 
         upload_markdowns(s3, bucket, base_prefix, media_id, results)
+        pages_processed_this_media += len(results)
         logger.info(f'media_id={media_id}: batch processed and uploaded ({len(results)} pages).')
 
     # 3) Cleanup disk
     shutil.rmtree(local_dir, ignore_errors=True)
     logger.info(f'media_id={media_id}: cleaned up local folder {local_dir}.')
-    return True
+    return pages_processed_this_media
 
 
 def main():
@@ -329,14 +332,16 @@ def main():
             return
 
         media_ids = [m for m, _ in pending]
+        run_start_time = time.time()
+        total_pages_processed = 0
 
         for folder_batch in tqdm(list(chunked(media_ids, args.folder_batch_size)), desc='Folder batches'):
             logger.info(f'Processing folder batch of size {len(folder_batch)} ...')
             for media_id in folder_batch:
-                processed = False
+                pages_processed = 0
                 try:
                     logger.info(f'Start processing media_id={media_id} ...')
-                    processed = process_media_folder(
+                    pages_processed = process_media_folder(
                         llm=llm,
                         sampling_params=sampling_params,
                         s3=s3,
@@ -354,17 +359,37 @@ def main():
                     # Free any leftover folder in case of partial failure
                     shutil.rmtree(os.path.join(args.download_tmp_dir, media_id), ignore_errors=True)
 
-                if processed:
+                if pages_processed > 0:
                     try:
                         update_status_done(conn, media_id)
                     except Exception as e:
                         logger.exception(f"Failed to update DB status for media_id={media_id}: {e}")
+
+                # Update and report overall throughput
+                total_pages_processed += pages_processed
+                elapsed_minutes = max((time.time() - run_start_time) / 60.0, 1e-6)
+                avg_ppm = total_pages_processed / elapsed_minutes
+                logger.info(
+                    f"Throughput so far: {total_pages_processed} pages in {elapsed_minutes:.2f} min "
+                    f"=> avg {avg_ppm:.2f} pages/min"
+                )
 
     finally:
         try:
             conn.close()
         except Exception:
             pass
+
+    # Final throughput summary
+    try:
+        elapsed_minutes = max((time.time() - run_start_time) / 60.0, 1e-6)
+        avg_ppm = total_pages_processed / elapsed_minutes if total_pages_processed else 0.0
+        logger = logging.getLogger('img-to-txt')
+        logger.info(
+            f"Final throughput: {total_pages_processed} pages in {elapsed_minutes:.2f} min => avg {avg_ppm:.2f} pages/min"
+        )
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':
