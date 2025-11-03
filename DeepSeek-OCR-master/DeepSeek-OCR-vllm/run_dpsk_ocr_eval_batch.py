@@ -1,5 +1,6 @@
 import os
 import re
+import argparse
 from tqdm import tqdm
 import torch
 if torch.version.cuda == '11.8':
@@ -94,17 +95,16 @@ if __name__ == "__main__":
 
     os.makedirs(OUTPUT_PATH, exist_ok=True)
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch_size", type=int, default=40, help="Number of images to process per batch")
+    args = parser.parse_args()
+    batch_size = args.batch_size
+
     # print('image processing until processing prompts.....')
 
     print(f'{Colors.RED}glob images.....{Colors.RESET}')
 
     images_path = glob.glob(f'{INPUT_PATH}/*')
-
-    images = []
-
-    for image_path in images_path:
-        image = Image.open(image_path).convert('RGB')
-        images.append(image)
 
     prompt = PROMPT
 
@@ -122,40 +122,47 @@ if __name__ == "__main__":
     #     ]
     #     batch_inputs.extend(cache_list)
 
-    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:  
-        batch_inputs = list(tqdm(
-            executor.map(process_single_image, images),
-            total=len(images),
-            desc="Pre-processed images"
-        ))
-
-
-    
-
-    outputs_list = llm.generate(
-        batch_inputs,
-        sampling_params=sampling_params
-    )
-
-
     output_path = OUTPUT_PATH
-
     os.makedirs(output_path, exist_ok=True)
 
-    for output, image in zip(outputs_list, images_path):
+    for start_idx in range(0, len(images_path), batch_size):
+        batch_paths = images_path[start_idx:start_idx + batch_size]
 
-        content = output.outputs[0].text
-        mmd_det_path = output_path + image.split('/')[-1].replace('.jpg', '_det.md')
+        images = []
+        for image_path in batch_paths:
+            image = Image.open(image_path).convert('RGB')
+            images.append(image)
 
-        with open(mmd_det_path, 'w', encoding='utf-8') as afile:
-            afile.write(content)
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            batch_inputs = list(tqdm(
+                executor.map(process_single_image, images),
+                total=len(images),
+                desc=f"Pre-processed images [{start_idx + 1}-{start_idx + len(images)}]"
+            ))
 
-        content = clean_formula(content)
-        matches_ref, mathes_other = re_match(content)
-        for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
-            content = content.replace(a_match_other, '').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n').replace('<center>', '').replace('</center>', '')
-        
-        mmd_path = output_path + image.split('/')[-1].replace('.jpg', '.md')
+        outputs_list = llm.generate(
+            batch_inputs,
+            sampling_params=sampling_params
+        )
 
-        with open(mmd_path, 'w', encoding='utf-8') as afile:
-            afile.write(content)
+        for output, image in zip(outputs_list, batch_paths):
+            content = output.outputs[0].text
+            # mmd_det_path = output_path + image.split('/')[-1].replace('.jpg', '_det.md')
+            # with open(mmd_det_path, 'w', encoding='utf-8') as afile:
+            #     afile.write(content)
+
+            content = clean_formula(content)
+            matches_ref, mathes_other = re_match(content)
+            for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
+                content = content.replace(a_match_other, '').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n').replace('<center>', '').replace('</center>', '')
+
+            mmd_path = output_path + image.split('/')[-1].replace('.jpg', '.md')
+            with open(mmd_path, 'w', encoding='utf-8') as afile:
+                afile.write(content)
+
+        # Explicitly close PIL Image objects to free memory
+        for img in images:
+            try:
+                img.close()
+            except Exception:
+                pass
