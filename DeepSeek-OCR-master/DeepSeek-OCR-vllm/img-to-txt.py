@@ -116,8 +116,8 @@ def s3_client():
 
 
 def list_media_pages(s3, bucket: str, base_prefix: str, media_id: str) -> List[str]:
-    # Pages live under: <base_prefix>/documents/<media_id>/
-    prefix = '/'.join([p for p in [base_prefix, 'documents', media_id] if p]) + '/'
+    # Pages live under: <base_prefix>/images/<media_id>/
+    prefix = '/'.join([p for p in [base_prefix, 'images', media_id] if p]) + '/'
     paginator = s3.get_paginator('list_objects_v2')
     keys: List[str] = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
