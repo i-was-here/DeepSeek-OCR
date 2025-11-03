@@ -35,7 +35,7 @@ llm = LLM(
     gpu_memory_utilization=0.9,
 )
 
-logits_processors = [NoRepeatNGramLogitsProcessor(ngram_size=40, window_size=90, whitelist_token_ids= {128821, 128822})] #window for fast；whitelist_token_ids: <td>,</td>
+logits_processors = [NoRepeatNGramLogitsProcessor(ngram_size=20, window_size=50, whitelist_token_ids= {128821, 128822})] #window for fast；whitelist_token_ids: <td>,</td>
 
 sampling_params = SamplingParams(
     temperature=0.0,
@@ -107,20 +107,6 @@ if __name__ == "__main__":
     images_path = glob.glob(f'{INPUT_PATH}/*')
 
     prompt = PROMPT
-
-    # batch_inputs = []
-
-
-    # for image in tqdm(images):
-
-    #     prompt_in = prompt
-    #     cache_list = [
-    #         {
-    #             "prompt": prompt_in,
-    #             "multi_modal_data": {"image": Image.open(image).convert('RGB')},
-    #         }
-    #     ]
-    #     batch_inputs.extend(cache_list)
 
     output_path = OUTPUT_PATH
     os.makedirs(output_path, exist_ok=True)
