@@ -3,6 +3,7 @@ import sys
 import re
 import shutil
 import argparse
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Dict, Iterable
 
@@ -27,6 +28,16 @@ from deepseek_ocr import DeepseekOCRForCausalLM
 from process.ngram_norepeat import NoRepeatNGramLogitsProcessor
 from process.image_process import DeepseekOCRProcessor
 from config import MODEL_PATH, PROMPT, CROP_MODE, MAX_CONCURRENCY
+
+
+def setup_logger():
+    level_name = os.getenv('LOG_LEVEL', 'INFO').upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+    )
+    return logging.getLogger('img-to-txt')
 
 
 def env_int(name: str, default: int) -> int:
@@ -57,6 +68,7 @@ def chunked(seq: List, size: int) -> Iterable[List]:
 
 def db_connect():
     load_dotenv()
+    logging.getLogger('img-to-txt').info('Connecting to PostgreSQL...')
     conn = psycopg2.connect(
         host=os.getenv('DB_HOST'),
         database=os.getenv('DB_NAME', 'postgres'),
@@ -64,6 +76,7 @@ def db_connect():
         password=os.getenv('DB_PASSWORD'),
         sslmode=os.getenv('DB_SSLMODE', 'require'),
     )
+    logging.getLogger('img-to-txt').info('Connected to PostgreSQL.')
     return conn
 
 
@@ -78,22 +91,28 @@ def fetch_pending_media(conn) -> List[Tuple[str, str]]:
             """
         )
         rows = cur.fetchall()
-    return [(str(r[0]), str(r[1]).lower()) for r in rows]
+    result = [(str(r[0]), str(r[1]).lower()) for r in rows]
+    logging.getLogger('img-to-txt').info(f'Fetched {len(result)} pending media rows (status=2).')
+    return result
 
 
 def update_status_done(conn, media_id: str):
     with conn.cursor() as cur:
         cur.execute("UPDATE table_3 SET status = 3 WHERE media_id = %s", (media_id,))
     conn.commit()
+    logging.getLogger('img-to-txt').info(f'Updated media_id={media_id} to status=3.')
 
 
 def s3_client():
-    return boto3.client(
+    logging.getLogger('img-to-txt').info('Creating S3 client...')
+    client = boto3.client(
         's3',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
         region_name=os.getenv('AWS_REGION')
     )
+    logging.getLogger('img-to-txt').info('S3 client ready.')
+    return client
 
 
 def list_media_pages(s3, bucket: str, base_prefix: str, media_id: str) -> List[str]:
@@ -109,20 +128,24 @@ def list_media_pages(s3, bucket: str, base_prefix: str, media_id: str) -> List[s
             if re.match(r'^page_\d+\.(jpg|jpeg|png)$', base, flags=re.IGNORECASE):
                 keys.append(key)
     keys.sort()
+    logging.getLogger('img-to-txt').info(f'media_id={media_id}: found {len(keys)} page images at s3://{bucket}/{prefix}')
     return keys
 
 
 def download_objects(s3, bucket: str, keys: List[str], dest_dir: str):
     os.makedirs(dest_dir, exist_ok=True)
+    logging.getLogger('img-to-txt').info(f'Downloading {len(keys)} objects to {dest_dir} ...')
     def _dl(key: str):
         local_path = os.path.join(dest_dir, os.path.basename(key))
         s3.download_file(bucket, key, local_path)
         return local_path
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(tqdm(ex.map(_dl, keys), total=len(keys), desc=f"Downloading -> {dest_dir}", leave=False))
+    logging.getLogger('img-to-txt').info(f'Download complete: {dest_dir}')
 
 
 def build_llm_and_params():
+    logging.getLogger('img-to-txt').info('Initializing DeepSeek OCR model & vLLM ...')
     if torch.version.cuda == '11.8':
         os.environ.setdefault("TRITON_PTXAS_PATH", "/usr/local/cuda-11.8/bin/ptxas")
     os.environ.setdefault('VLLM_USE_V1', '0')
@@ -152,6 +175,7 @@ def build_llm_and_params():
         logits_processors=logits_processors,
         skip_special_tokens=False,
     )
+    logging.getLogger('img-to-txt').info('Model ready.')
     return llm, sampling_params
 
 
@@ -206,6 +230,7 @@ def upload_markdowns(s3, bucket: str, base_prefix: str, media_id: str, outputs: 
     items = list(outputs.items())
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(_put, items))
+    logging.getLogger('img-to-txt').info(f'media_id={media_id}: uploaded {len(items)} markdown files to s3://{bucket}/{base_prefix or ""}')</n>
 
 
 def process_media_folder(
@@ -221,6 +246,7 @@ def process_media_folder(
     # 1) List & download
     keys = list_media_pages(s3, bucket, base_prefix, media_id)
     if not keys:
+        logging.getLogger('img-to-txt').warning(f'media_id={media_id}: no page images found; skipping.')
         return False  # nothing to do
 
     local_dir = os.path.join(download_root, media_id)
@@ -233,8 +259,10 @@ def process_media_folder(
         if re.match(r'^page_\d+\.(jpg|jpeg|png)$', f, flags=re.IGNORECASE)
     ])
 
+    logger = logging.getLogger('img-to-txt')
     for batch in tqdm(list(chunked(page_paths, mini_batch_size)), desc=f"OCR {media_id}", leave=False):
         batch_inputs = build_batch_inputs(batch)
+        logger.info(f'media_id={media_id}: running OCR for {len(batch)} pages ...')
         outputs_list = llm.generate(batch_inputs, sampling_params=sampling_params)
 
         results: Dict[str, str] = {}
@@ -245,13 +273,16 @@ def process_media_folder(
             results[img_path] = content
 
         upload_markdowns(s3, bucket, base_prefix, media_id, results)
+        logger.info(f'media_id={media_id}: batch processed and uploaded ({len(results)} pages).')
 
     # 3) Cleanup disk
     shutil.rmtree(local_dir, ignore_errors=True)
+    logger.info(f'media_id={media_id}: cleaned up local folder {local_dir}.')
     return True
 
 
 def main():
+    logger = setup_logger()
     parser = argparse.ArgumentParser()
     parser.add_argument('--folder-batch-size', type=int, default=env_int('FOLDER_BATCH_SIZE', 40))
     parser.add_argument('--mini-page-batch-size', type=int, default=env_int('MINI_PAGE_BATCH_SIZE', 20))
@@ -264,6 +295,7 @@ def main():
         raise ValueError('S3_URL must specify a bucket, e.g., s3://my-bucket')
 
     os.makedirs(args.download_tmp_dir, exist_ok=True)
+    logger.info(f'Run config: bucket={bucket}, prefix={base_prefix}, folder_batch_size={args.folder_batch_size}, mini_page_batch_size={args.mini_page_batch_size}, tmp_dir={args.download_tmp_dir}')
 
     # Initialize once
     llm, sampling_params = build_llm_and_params()
@@ -274,15 +306,17 @@ def main():
     try:
         pending = fetch_pending_media(conn)
         if not pending:
-            print('No pending media to process (status=2).')
+            logger.info('No pending media to process (status=2).')
             return
 
         media_ids = [m for m, _ in pending]
 
         for folder_batch in tqdm(list(chunked(media_ids, args.folder_batch_size)), desc='Folder batches'):
+            logger.info(f'Processing folder batch of size {len(folder_batch)} ...')
             for media_id in folder_batch:
                 processed = False
                 try:
+                    logger.info(f'Start processing media_id={media_id} ...')
                     processed = process_media_folder(
                         llm=llm,
                         sampling_params=sampling_params,
@@ -294,9 +328,9 @@ def main():
                         download_root=args.download_tmp_dir,
                     )
                 except ClientError as ce:
-                    print(f"S3 error for {media_id}: {ce}")
+                    logger.exception(f"S3 error for media_id={media_id}: {ce}")
                 except Exception as e:
-                    print(f"Processing error for {media_id}: {e}")
+                    logger.exception(f"Processing error for media_id={media_id}: {e}")
                 finally:
                     # Free any leftover folder in case of partial failure
                     shutil.rmtree(os.path.join(args.download_tmp_dir, media_id), ignore_errors=True)
@@ -305,7 +339,7 @@ def main():
                     try:
                         update_status_done(conn, media_id)
                     except Exception as e:
-                        print(f"Failed to update DB status for {media_id}: {e}")
+                        logger.exception(f"Failed to update DB status for media_id={media_id}: {e}")
 
     finally:
         try:
