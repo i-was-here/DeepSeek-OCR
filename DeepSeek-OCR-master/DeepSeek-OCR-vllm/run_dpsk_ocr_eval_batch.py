@@ -134,11 +134,13 @@ if __name__ == "__main__":
             images.append(image)
 
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-            batch_inputs = list(tqdm(
-                executor.map(process_single_image, images),
-                total=len(images),
-                desc=f"Pre-processed images [{start_idx + 1}-{start_idx + len(images)}]"
-            ))
+            batch_inputs = list(
+            # tqdm(
+                executor.map(process_single_image, images)
+                # total=len(images),
+                # desc=f"Pre-processed images [{start_idx + 1}-{start_idx + len(images)}]"
+            # )
+            )
 
         outputs_list = llm.generate(
             batch_inputs,

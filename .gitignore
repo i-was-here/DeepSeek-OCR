@@ -1,0 +1,32 @@
+# Python cache and artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Project-specific cache dirs
+deepencoder/__pycache__/
+process/__pycache__/
+
+# Virtual environments (including parent-level venvs)
+.venv/
+venv/
+env/
+ENV/
+../venv/
+../../venv/
+
+# Wheel files
+*.whl
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
