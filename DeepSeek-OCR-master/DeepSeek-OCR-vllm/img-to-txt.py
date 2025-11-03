@@ -10,6 +10,7 @@ from typing import List, Tuple, Dict, Iterable
 import psycopg2
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 from dotenv import load_dotenv
 from tqdm import tqdm
 from PIL import Image
@@ -30,14 +31,21 @@ from process.image_process import DeepseekOCRProcessor
 from config import MODEL_PATH, PROMPT, CROP_MODE, MAX_CONCURRENCY
 
 
-def setup_logger():
-    level_name = os.getenv('LOG_LEVEL', 'INFO').upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
-    )
-    return logging.getLogger('img-to-txt')
+def setup_logger(verbose: bool):
+    logger = logging.getLogger('img-to-txt')
+    if verbose:
+        # Configure only when verbose; otherwise keep silent
+        level_name = os.getenv('LOG_LEVEL', 'INFO').upper()
+        level = getattr(logging, level_name, logging.INFO)
+        logging.basicConfig(
+            level=level,
+            format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+        )
+        logger.disabled = False
+    else:
+        # Disable this logger entirely when not verbose
+        logger.disabled = True
+    return logger
 
 
 def env_int(name: str, default: int) -> int:
@@ -105,11 +113,17 @@ def update_status_done(conn, media_id: str):
 
 def s3_client():
     logging.getLogger('img-to-txt').info('Creating S3 client...')
+    max_pool = env_int('AWS_MAX_POOL_CONNECTIONS', 64)
     client = boto3.client(
         's3',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
+        region_name=os.getenv('AWS_REGION'),
+        config=Config(
+            max_pool_connections=max_pool,
+            retries={'max_attempts': env_int('AWS_MAX_RETRIES', 5), 'mode': 'standard'},
+            tcp_keepalive=True,
+        )
     )
     logging.getLogger('img-to-txt').info('S3 client ready.')
     return client
@@ -139,7 +153,8 @@ def download_objects(s3, bucket: str, keys: List[str], dest_dir: str):
         local_path = os.path.join(dest_dir, os.path.basename(key))
         s3.download_file(bucket, key, local_path)
         return local_path
-    with ThreadPoolExecutor(max_workers=16) as ex:
+    max_workers = min(len(keys) or 1, env_int('S3_DOWNLOAD_WORKERS', 16))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
         list(tqdm(ex.map(_dl, keys), total=len(keys), desc=f"Downloading -> {dest_dir}", leave=False))
     logging.getLogger('img-to-txt').info(f'Download complete: {dest_dir}')
 
@@ -228,7 +243,8 @@ def upload_markdowns(s3, bucket: str, base_prefix: str, media_id: str, outputs: 
         s3.put_object(Bucket=bucket, Key=key, Body=content.encode('utf-8'), ContentType='text/markdown')
 
     items = list(outputs.items())
-    with ThreadPoolExecutor(max_workers=16) as ex:
+    max_workers = min(len(items) or 1, env_int('S3_UPLOAD_WORKERS', 16))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
         list(ex.map(_put, items))
     logging.getLogger('img-to-txt').info(f'media_id={media_id}: uploaded {len(items)} markdown files to s3://{bucket}/{base_prefix or ""}')
 
@@ -282,13 +298,16 @@ def process_media_folder(
 
 
 def main():
-    logger = setup_logger()
+    # Parse flags early to control logging
     parser = argparse.ArgumentParser()
     parser.add_argument('--folder-batch-size', type=int, default=env_int('FOLDER_BATCH_SIZE', 40))
     parser.add_argument('--mini-page-batch-size', type=int, default=env_int('MINI_PAGE_BATCH_SIZE', 20))
     parser.add_argument('--download-tmp-dir', type=str, default=os.getenv('DOWNLOAD_TMP_DIR', '/tmp/ds_ocr_downloads'))
     parser.add_argument('--s3-url', type=str, default=os.getenv('S3_URL', 's3://'))
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging', default=False)
     args = parser.parse_args()
+
+    logger = setup_logger(args.verbose)
 
     bucket, base_prefix = parse_s3_url(args.s3_url)
     if not bucket:
