@@ -373,6 +373,10 @@ def main():
                     f"Throughput so far: {total_pages_processed} pages in {elapsed_minutes:.2f} min "
                     f"=> avg {avg_ppm:.2f} pages/min"
                 )
+                print(
+                    f"Throughput so far: {total_pages_processed} pages in {elapsed_minutes:.2f} min "
+                    f"=> avg {avg_ppm:.2f} pages/min"
+                )
 
     finally:
         try:
