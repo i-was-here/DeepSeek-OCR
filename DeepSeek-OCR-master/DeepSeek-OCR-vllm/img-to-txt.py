@@ -230,7 +230,7 @@ def upload_markdowns(s3, bucket: str, base_prefix: str, media_id: str, outputs: 
     items = list(outputs.items())
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(_put, items))
-    logging.getLogger('img-to-txt').info(f'media_id={media_id}: uploaded {len(items)} markdown files to s3://{bucket}/{base_prefix or ""}')</n>
+    logging.getLogger('img-to-txt').info(f'media_id={media_id}: uploaded {len(items)} markdown files to s3://{bucket}/{base_prefix or ""}')
 
 
 def process_media_folder(
