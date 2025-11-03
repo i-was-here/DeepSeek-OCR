@@ -125,7 +125,7 @@ if __name__ == "__main__":
     output_path = OUTPUT_PATH
     os.makedirs(output_path, exist_ok=True)
 
-    for start_idx in range(0, len(images_path), batch_size):
+    for start_idx in tqdm(range(0, len(images_path), batch_size)):
         batch_paths = images_path[start_idx:start_idx + batch_size]
 
         images = []
@@ -153,7 +153,7 @@ if __name__ == "__main__":
 
             content = clean_formula(content)
             matches_ref, mathes_other = re_match(content)
-            for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
+            for idx, a_match_other in enumerate(mathes_other):
                 content = content.replace(a_match_other, '').replace('\n\n\n\n', '\n\n').replace('\n\n\n', '\n\n').replace('<center>', '').replace('</center>', '')
 
             mmd_path = output_path + image.split('/')[-1].replace('.jpg', '.md')
