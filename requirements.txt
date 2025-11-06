@@ -7,3 +7,5 @@ easydict
 addict 
 Pillow
 numpy
+psycopg2-binary
+boto3

@@ -2,6 +2,7 @@
 
 # make sure python version is 3.12.9
 sudo apt install python3-venv
+sudo apt install python3-dev
 python3 -m venv venv
 source venv/bin/activate
 

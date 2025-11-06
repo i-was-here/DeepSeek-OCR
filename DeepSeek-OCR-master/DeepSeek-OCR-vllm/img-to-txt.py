@@ -32,6 +32,8 @@ from process.image_process import DeepseekOCRProcessor
 from config import MODEL_PATH, PROMPT, CROP_MODE, MAX_CONCURRENCY
 
 
+load_dotenv()
+
 def setup_logger(verbose: bool):
     logger = logging.getLogger('img-to-txt')
     if verbose:
@@ -96,7 +98,7 @@ def fetch_pending_media(conn) -> List[Tuple[str, str]]:
             """
             SELECT media_id, document_type
             FROM table_3
-            WHERE status = 2 AND document_type IN ('pdf','jpg','jpeg','png')
+            WHERE status = 2 AND document_type IN ('pdf')
             """
         )
         rows = cur.fetchall()
@@ -179,7 +181,7 @@ def build_llm_and_params():
         swap_space=0,
         max_num_seqs=MAX_CONCURRENCY,
         tensor_parallel_size=1,
-        gpu_memory_utilization=0.9,
+        gpu_memory_utilization=0.96,
     )
 
     logits_processors = [
@@ -308,7 +310,25 @@ def main():
     parser.add_argument('--download-tmp-dir', type=str, default=os.getenv('DOWNLOAD_TMP_DIR', '/tmp/ds_ocr_downloads'))
     parser.add_argument('--s3-url', type=str, default=os.getenv('S3_URL', 's3://'))
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging', default=False)
+    parser.add_argument('--mod-value', type=int, default=None, help='Modulus value for filtering media_ids (can also be set via MOD_VALUE env var)')
+    parser.add_argument('--mod-remainder', type=int, default=None, help='Remainder value for filtering media_ids (can also be set via MOD_REMAINDER env var)')
     args = parser.parse_args()
+
+    # Check environment variables if not provided via command line
+    if args.mod_value is None:
+        mod_value_env = os.getenv('MOD_VALUE')
+        if mod_value_env:
+            try:
+                args.mod_value = int(mod_value_env)
+            except ValueError:
+                args.mod_value = None
+    if args.mod_remainder is None:
+        mod_remainder_env = os.getenv('MOD_REMAINDER')
+        if mod_remainder_env:
+            try:
+                args.mod_remainder = int(mod_remainder_env)
+            except ValueError:
+                args.mod_remainder = None
 
     logger = setup_logger(args.verbose)
 
@@ -317,7 +337,8 @@ def main():
         raise ValueError('S3_URL must specify a bucket, e.g., s3://my-bucket')
 
     os.makedirs(args.download_tmp_dir, exist_ok=True)
-    logger.info(f'Run config: bucket={bucket}, prefix={base_prefix}, folder_batch_size={args.folder_batch_size}, mini_page_batch_size={args.mini_page_batch_size}, tmp_dir={args.download_tmp_dir}')
+    mod_filter_info = f', mod_value={args.mod_value}, mod_remainder={args.mod_remainder}' if (args.mod_value is not None and args.mod_remainder is not None) else ''
+    logger.info(f'Run config: bucket={bucket}, prefix={base_prefix}, folder_batch_size={args.folder_batch_size}, mini_page_batch_size={args.mini_page_batch_size}, tmp_dir={args.download_tmp_dir}{mod_filter_info}')
 
     # Initialize once
     llm, sampling_params = build_llm_and_params()
@@ -330,6 +351,24 @@ def main():
         if not pending:
             logger.info('No pending media to process (status=2).')
             return
+
+        # Filter by modulus if both parameters are provided
+        if args.mod_value is not None and args.mod_remainder is not None:
+            original_count = len(pending)
+            filtered_pending = []
+            for media_id, doc_type in pending:
+                try:
+                    media_id_int = int(media_id)
+                    if media_id_int % args.mod_value == args.mod_remainder:
+                        filtered_pending.append((media_id, doc_type))
+                except (ValueError, TypeError):
+                    # Skip media_ids that can't be converted to int
+                    logger.warning(f'Skipping media_id={media_id}: cannot convert to integer for modulus filtering')
+            pending = filtered_pending
+            logger.info(f'Filtered {original_count} pending media to {len(pending)} items (mod_value={args.mod_value}, mod_remainder={args.mod_remainder})')
+            if not pending:
+                logger.info('No pending media to process after modulus filtering.')
+                return
 
         media_ids = [m for m, _ in pending]
         run_start_time = time.time()
