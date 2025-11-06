@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # make sure python version is 3.12.9
-sudo apt install python3-venv
-sudo apt install python3-dev
+sudo apt install -y python3-venv
+sudo apt install -y python3-dev
 python3 -m venv venv
 source venv/bin/activate
 
@@ -10,6 +10,7 @@ pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https
 wget https://github.com/vllm-project/vllm/releases/download/v0.8.5/vllm-0.8.5+cu121-cp38-abi3-manylinux1_x86_64.whl
 pip install vllm-0.8.5+cu121-cp38-abi3-manylinux1_x86_64.whl
 pip install -r requirements.txt
+pip install nvitop
 pip install wheel
 pip install packaging
 pip uninstall -y ninja && pip install ninja

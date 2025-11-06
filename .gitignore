@@ -31,3 +31,5 @@ ENV/
 Thumbs.db
 
 **.env
+
+cuda-repo-ubuntu2204-12-8-local_12.8.1-570.124.06-1_amd64.deb
