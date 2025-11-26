@@ -9,3 +9,7 @@ Pillow
 numpy
 psycopg2-binary
 boto3
+llama-index
+llama-index-embeddings-google
+llama-index-vector-stores-pinecone
+llama-index-embeddings-google-genai
